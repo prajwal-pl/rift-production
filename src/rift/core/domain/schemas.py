@@ -3,6 +3,18 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, EmailStr, Field
 
+BuildStatus = Literal[
+    "queued",
+    "designing",
+    "building",
+    "verifying",
+    "repairing",
+    "awaiting_approval",
+    "published",
+    "failed",
+    "budget_exceeded",
+]
+
 
 class User(BaseModel):
     id: str
@@ -31,19 +43,23 @@ class Project(BaseModel):
     slug: str
     name: str
     org_id: str
-    prompt: str
-    gdd: dict[str, Any] = Field(default_factory=dict)
-    plan: list[dict[str, Any]] = Field(default_factory=list)
-    verify_report: dict[str, Any] = Field(default_factory=dict)
     engine: Literal["phaser3", "3d-engine"] = "phaser3"
     current_build_id: str | None = None
     visibility: Literal["public", "private"] = "public"
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class Build(BaseModel):
     id: str
     project_id: str
+    org_id: str
+    prompt: str
+    status: BuildStatus = "queued"
+    gdd: dict[str, Any] = Field(default_factory=dict)
+    plan: list[dict[str, Any]] = Field(default_factory=list)
+    verify_report: dict[str, Any] = Field(default_factory=dict)
     artifact_key: str | None = None
+    thread_id: str | None = None
     parent_build_id: str | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     finished_at: datetime | None = None
@@ -58,3 +74,4 @@ class Artifact(BaseModel):
 
 class SandboxSession(BaseModel):
     pass
+
