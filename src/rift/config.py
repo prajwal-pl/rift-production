@@ -11,8 +11,13 @@ class RiftSettings(BaseSettings):
 
     environment: str = "development"
     database_url: str = DEFAULT_DATABASE_URL
+    daytona_api_url: str = "https://app.daytona.io/api"
     openrouter_api_key: SecretStr | None = None
     groq_api_key: SecretStr | None = None
+    daytona_api_key: SecretStr | None = None
+    r2_access_key: SecretStr | None = None
+    r2_secret_access_key: SecretStr | None = None
+    account_token: SecretStr | None = None
 
     max_attempts: int = 4
     token_budget: int = 250_000
@@ -35,4 +40,3 @@ class RiftSettings(BaseSettings):
 @lru_cache
 def get_settings() -> RiftSettings:
     return RiftSettings()
-

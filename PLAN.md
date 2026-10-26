@@ -35,7 +35,7 @@
 11. [The Agent Studio (LangGraph)](#the-agent-studio-langgraph)
 12. [The Game Dev Toolbox](#the-game-dev-toolbox)
 13. [The Engine Kit](#the-engine-kit)
-14. [The Sandbox Layer (Modal)](#the-sandbox-layer-modal)
+14. [The Sandbox Layer (Daytona & E2B)](#the-sandbox-layer-daytona--e2b)
 15. [Verification & Evaluation](#verification--evaluation)
 16. [Multi-Tenancy, Quotas & Metering](#multi-tenancy-quotas--metering)
 17. [API Design](#api-design)
@@ -120,7 +120,7 @@ These are non-negotiable and referenced throughout the phases.
    runtime are *authoritative*.
 
 3. **Isolation is the product boundary.**
-   All generated code executes in a microVM (Modal gVisor/VM), never on the
+   All generated code executes in an isolated cloud sandbox (Daytona / E2B), never on the
    host. The game executes in a sandboxed iframe with no network. Two
    sandboxes, two threat models.
 
@@ -157,7 +157,7 @@ These are non-negotiable and referenced throughout the phases.
 
 | Term | Meaning |
 |---|---|
-| **Execution sandbox** | Server-side microVM where agent-generated code builds/tests (Modal). |
+| **Execution sandbox** | Server-side isolated container/microVM where agent-generated code builds/tests (Daytona / E2B). |
 | **Runtime sandbox** | Browser `<iframe>` where the finished game runs for the user. |
 | **GDD** | Game Design Document — the structured spec the Designer agent emits. |
 | **Engine Kit** | Our fixed, tested Phaser + Vite + TS runtime that agents target. |
@@ -193,7 +193,7 @@ These are non-negotiable and referenced throughout the phases.
 │  toolbox/   → tool registry (deterministic + generative)               │
 │  skills/    → progressive-disclosure game-domain skills                │
 │  engine/    → Engine Kit + starters (Phaser/Vite/TS)                   │
-│  sandbox/   → SandboxProvider interface (modal/e2b/daytona/local)      │
+│  sandbox/   → SandboxProvider interface (daytona/e2b/local)            │
 │  verify/    → static checks + Playwright runtime harness + graders     │
 │  memory/    → checkpointer (Postgres) + store (Postgres, pgvector)     │
 │  evals/     → golden prompts, graders, scoreboard                      │
@@ -202,7 +202,7 @@ These are non-negotiable and referenced throughout the phases.
                 │
    ┌────────────┼────────────┬──────────────┬─────────────────┐
    ▼            ▼            ▼              ▼                 ▼
- Postgres    Upstash       Modal        Cloudflare R2     LangSmith
+ Postgres    Upstash      Daytona/E2B   Cloudflare R2     LangSmith
  (Neon)      (Redis+QStash)(sandboxes)  (artifacts)       (traces/evals)
 ```
 
@@ -248,7 +248,7 @@ rift/
 │  ├─ verify/                   #   python-side verifiers + graders
 │  ├─ memory/                   #   checkpointer + store wiring
 │  ├─ evals/                    #   golden set + scoreboard runner
-│  ├─ adapters/                 #   modal.py, e2b.py, r2.py, upstash.py, llm.py
+│  ├─ adapters/                 #   daytona.py, e2b.py, r2.py, upstash.py, llm.py
 │  └─ api/                      #   FastAPI app factory (shared by apps/api)
 ├─ tests/                       # pytest (unit + integration + e2e)
 ├─ evals/                       # golden prompts + expected assertions (data)
@@ -294,9 +294,9 @@ exact versions in lockfiles at implementation time.
 
 | Piece | Choice | Notes |
 |---|---|---|
-| Primary sandbox | **Modal Sandboxes** | gVisor or VM microVM; per-sandbox CPU/RAM; **$30/mo recurring free credits**; 100 containers; network blocking; filesystem snapshots |
+| Primary sandbox | **Daytona Sandboxes** (`daytona`, `langchain-daytona`) | Sub-second (`~90ms`) snapshot cold-starts; per-sandbox CPU/RAM (`Resources`); **$200 free compute credits** (no card for Tier 1: 10 vCPU / 10 GiB RAM / 30 GiB storage); native `deepagents` backend |
 | Interface | `SandboxProvider` (Protocol) | Vendor-neutral |
-| Alternates | **E2B** (Firecracker, RAM 2–8 GiB via template), **Daytona** (Tier 1 = 10 GiB), **Northflank Sandboxes** (Kata/gVisor), **self-host** (gVisor on Oracle Always Free) | Swap via config |
+| Alternates | **E2B** (`e2b` Firecracker microVMs, $100 one-time credit, up to 8 GiB RAM via template, 20 concurrent), **Northflank Sandboxes** (Kata/gVisor), **self-host** (gVisor on Oracle Always Free) | Swap via config |
 | Hardening (optional) | `agentsh-secure-sandbox` | seccomp/Landlock/network-proxy/DLP for LangChain agents |
 
 ### App / data layer
@@ -335,7 +335,7 @@ Most people conflate these. Keeping them separate is half the architecture.
 | | **Execution sandbox** | **Runtime sandbox** |
 |---|---|---|
 | Runs | Agent-generated code: install, typecheck, build, tests | The finished game the **user** plays |
-| Where | Modal microVM (server-side) | Browser `<iframe>` |
+| Where | Daytona / E2B cloud sandbox (server-side) | Browser `<iframe>` |
 | Isolation | gVisor/VM microVM, own kernel or syscall interception | `sandbox` attr + strict CSP, no network, no same-origin |
 | Lifetime | Ephemeral (per build), ≤ few minutes | Static artifact, served forever, zero compute |
 | Cost | The **only** real cost center | ~$0 (runs on the user's machine) |
@@ -672,57 +672,50 @@ guessing from a screenshot.
 
 ---
 
-## The Sandbox Layer (Modal)
+## The Sandbox Layer (Daytona & E2B)
 
 `SandboxProvider` is a `Protocol` in `src/rift/core/ports/`. Adapters live in
 `src/rift/adapters/`.
 
 ```python
 class SandboxProvider(Protocol):
-    async def create(self, *, image: str, vcpu: float, memory_mib: int,
-                     timeout_s: int, network: bool = False) -> Sandbox: ...
-    async def exec(self, ref: str, cmd: list[str], *, timeout_s: int) -> ExecResult: ...
-    async def write_file(self, ref: str, path: str, data: bytes) -> None: ...
-    async def read_file(self, ref: str, path: str) -> bytes: ...
-    async def expose_port(self, ref: str, port: int) -> str | None: ...
-    async def terminate(self, ref: str) -> None: ...
+    async def create(self) -> str: ...
+    async def read_file(self, sandbox_id: str, path: str) -> bytes: ...
+    async def write_file(self, sandbox_id: str, content: bytes, path: str) -> None: ...
+    async def exec(self, sandbox_id: str, cmd: list[str]) -> ExecResult: ...
+    async def terminate(self, sandbox_id: str) -> None: ...
 ```
 
-### Modal adapter details (verified Oct 2026)
+### Daytona adapter details (Primary — verified Oct 2026)
 
-- `modal.Sandbox.create(app, image=..., timeout=..., idle_timeout=...,
-  runtime="gvisor"|"vm", ...)`.
-- **Default max lifetime is 5 minutes** → set `timeout` explicitly (up to 24h;
-  builds need ~5–15 min). Use `idle_timeout` to auto-kill stuck sandboxes.
-- **Runtime choice:** `gvisor` for normal builds (strong, fast). `vm` **only if
-  you need Docker-in-sandbox** (slower start).
-- **Resources:** CPU/memory are set **per sandbox** (unlike E2B, where RAM is
-  fixed at template build time). Budget ~2 vCPU / 4096 MiB for build+verify.
-- **Images:** build and **publish a named image** (`Image.build(...).publish(
-  "rift-sandbox")`) in CI, then `Image.from_name("rift-sandbox")` at runtime so
-  sandbox creation never blocks on an image rebuild. The image bakes in: Node,
-  **pnpm**, the Engine Kit, and Playwright + Chromium.
-- **Network:** deny egress by default. Allowlist only the npm registry during
-  `install_deps`. This is both a security and a determinism win.
-- **Secrets:** never inject app secrets into a build sandbox. If a build must
-  reach a private registry, use a scoped, short-lived token passed via
-  `modal.Secret` and remove it before the game's bundle step.
-- **Lifecycle:** `Sandbox.from_id` to reattach; `sandbox.terminate()` in a
-  `finally`; register orphan reaping (see Sandbox Management).
+- **SDK:** `AsyncDaytona` from `daytona` (plus `langchain-daytona`'s `DaytonaSandbox` for direct `deepagents` integration).
+- **Creation & Snapshots:** `await daytona.create(CreateSandboxFromSnapshotParams(snapshot="rift-sandbox", auto_stop_interval=15))` or `CreateSandboxFromImageParams(image=..., resources=Resources(cpu=2, memory=4, disk=8))`.
+- **Pre-baked Snapshot (`rift-sandbox`):** Pre-build a Daytona snapshot (or custom Docker image) baking in Node, **pnpm**, the Engine Kit, and Playwright + Chromium so sandbox creation boots in **~90ms** without rebuilding dependencies on every run.
+- **Filesystem & Execution:**
+  - Write file: `await sandbox.fs.upload_file(content_bytes, path)`
+  - Read file: `await sandbox.fs.download_file(path)` → `bytes`
+  - Execute command: `await sandbox.process.exec(cmd_str, timeout=...)`
+- **Lifecycle:** Always call `await daytona.delete(sandbox)` in a `finally` block; configure `auto_stop_interval` and `auto_delete_interval` so stuck sandboxes never leak credits.
+- **Secrets:** Never inject app secrets into a build sandbox.
 
-### Other adapters (swap by config)
+### E2B adapter details (Secondary Fallback — `src/rift/adapters/e2b.py`)
 
-| Provider | Spec | Why keep it |
+- **SDK:** `AsyncSandbox` from `e2b`.
+- **Creation:** `sb = await AsyncSandbox.create(template="rift-sandbox", timeout=600)`
+- **Filesystem & Execution:**
+  - Write file: `await sb.files.write(path, content)`
+  - Read file: `await sb.files.read(path, format="bytes")`
+  - Execute command: `await sb.commands.run(cmd_str, timeout=...)`
+  - Cleanup: `await sb.kill()`
+
+### Why Daytona is primary over E2B (and other adapters)
+
+| Provider | Free Tier & Spec | Billing & Trade-offs |
 |---|---|---|
-| **E2B** | RAM **fixed at template build**, up to 8 GiB (Hobby); 20 concurrent; $100 one-time | Ergonomics; pause/resume |
-| **Daytona** | Tier 1 = 10 vCPU / 10 GiB / 30 GiB; $200 credit | LangChain-documented; strong free spec |
+| **Daytona (Primary)** | **$200 free credit**; Tier 1 (email verified, no card) = 10 vCPU / 10 GiB RAM / 30 GiB storage; 5 GiB free storage | Pure pay-as-you-go per second (~$0.0504/vCPU-hr, ~$0.0162/GiB-hr) with **no monthly base fee**; per-sandbox CPU/RAM (`Resources`); official `langchain-daytona` package for Deep Agents |
+| **E2B (Fallback)** | **$100 one-time credit** on Hobby ($0/mo); up to 8 GiB RAM (fixed at template build); 20 concurrent; **1 hr max session** | Upgrading beyond Hobby jumps to **$150/month Pro base fee**; RAM is fixed per template rather than per sandbox |
 | **Northflank Sandboxes** | Kata microVMs / gVisor | Lets us keep everything in one vendor |
 | **Self-host (gVisor on Oracle Always Free)** | 2 OCPU / 12 GB, $0 forever | Long-term zero-cost escape hatch |
-
-**Why Modal is primary:** per-sandbox RAM (no template rebuild to resize),
-Python-native (same language as the agent stack), **recurring** monthly free
-credits (vs one-time), network blocking, filesystem snapshots, and strong
-production precedent (Lovable, Ramp).
 
 ---
 
@@ -813,12 +806,12 @@ keyed on `(build_id, kind, dedupe_key)` so retries never double-count. Expose
 
 ### Sandbox management
 
-- **Warm pool** — keep a small pool of pre-created sandboxes to cut cold starts.
-- **Named sandboxes** (Modal) — one per project to prevent duplicate concurrent
+- **Warm pool / Snapshots** — use pre-built Daytona snapshots (`rift-sandbox`) for ~90ms cold starts.
+- **Per-project labels** (Daytona `labels={"project_id": ...}`) — prevent duplicate concurrent
   builds on the same project.
-- **TTL + idle timeout** — every sandbox has a max lifetime and an idle kill.
+- **TTL + auto-stop** — every sandbox sets `auto_stop_interval` and max lifetime.
 - **Orphan reaper** — periodic job terminates sandboxes with no live build
-  (`Sandbox.list` + tags).
+  (`daytona.list()` + labels).
 - **Placement** — a build gets **exactly one** sandbox; never reuse a sandbox
   across tenants.
 
@@ -901,7 +894,7 @@ Two threat surfaces: **generated code** (server) and **generated games**
 (browser). Plus classic multi-tenant data isolation.
 
 ### Generated code (execution sandbox)
-- MicroVM isolation (Modal gVisor/VM). No host mounts. No host env/secrets.
+- Isolated container / microVM execution (Daytona / E2B). No host mounts. No host env/secrets.
 - **Egress denied by default**; allowlist npm registry only during install.
 - `pnpm install --ignore-scripts` — never run postinstall scripts.
 - Pinned lockfiles; pinned Node; pinned Engine Kit → determinism + supply-chain
@@ -941,14 +934,14 @@ Two threat surfaces: **generated code** (server) and **generated games**
 **The sandbox and the LLM are the only real costs.** Everything else is free
 tier. Budgets make this safe.
 
-### Modal sandbox cost (per build, ~2 vCPU / 4 GiB, ~4 min)
+### Daytona / E2B sandbox cost (per build, ~2 vCPU / 4 GiB, ~4 min)
 
 | Resource | Rate (Oct 2026) | Build usage | Cost |
 |---|---|---|---|
-| CPU | $0.00003942 / core / s | 2 cores × 240 s | ~$0.019 |
-| Memory | $0.00000667 / GiB / s | 4 GiB × 240 s | ~$0.006 |
-| **Per build** | | | **~$0.025** |
-| **Free credit** | **$30 / month (recurring)** | | **~1,200 builds/mo** |
+| CPU | ~$0.000014 / vCPU / s ($0.0504/hr) | 2 vCPU × 240 s | ~$0.0067 |
+| Memory | ~$0.0000045 / GiB / s ($0.0162/GiB-hr) | 4 GiB × 240 s | ~$0.0043 |
+| **Per build** | | | **~$0.011** |
+| **Free credit** | **$200 (Daytona) + $100 (E2B)** | | **~18,000+ builds** |
 
 ### Controls
 
@@ -985,7 +978,7 @@ Northflank free database  → (optional) Redis/PG fallback
 Neon free                 → Postgres + pgvector (checkpoints, store, domain)
 Upstash free              → Redis (locks) + QStash (cron + durable delays)
 Cloudflare R2 free        → static game bundles, screenshots, playtraces
-Modal ($30/mo recurring)  → execution sandbox (build + Playwright verify)
+Daytona ($200 credit)/E2B → execution sandbox (build + Playwright verify)
 Gemini/Groq free          → LLM
 LangSmith Developer       → traces + evals
 ────────────────────────────────────────────────────────────────────────────
@@ -1007,7 +1000,7 @@ LangSmith Developer       → traces + evals
 **Decision:** Northflank free for `api` + `worker` (two services, always-on).
 Fallback if the card requirement blocks you: **Oracle Always Free VM** running
 Docker Compose (API + worker + Redis), which also becomes the **self-hosted
-sandbox** once Modal credits matter. Keep `SandboxProvider` swappable for this.
+sandbox** once Daytona/E2B credits matter. Keep `SandboxProvider` swappable for this.
 
 ### Scheduler / durable waits
 
@@ -1061,7 +1054,7 @@ Each phase ends in a runnable artifact and a demo. "DoD" = Definition of Done.
 - [ ] `core/` split: `domain/`, `ports/`, `config.py`, `errors.py`, `logging.py`.
 - [ ] `infra/compose/` — Postgres+pgvector, Redis, MinIO.
 - [ ] CI: ruff, pyright, pytest, eslint, tsc, vitest.
-- [ ] ADR-0001: sandbox vendor = Modal (with rationale + alternatives).
+- [ ] ADR-0001: sandbox vendor = Daytona (with E2B fallback + rationale).
 - [ ] Import-linter rule: `core/` may not import adapters/vendor SDKs.
 
 **DoD:** `uv run pytest` + `npm run build` pass in CI on an empty-but-real
@@ -1090,10 +1083,10 @@ tests; `org_id` scoping enforced and tested.
 
 **Goal:** we can create a sandbox, scaffold a game, build it, and screenshot it.
 
-- [ ] `SandboxProvider` Protocol + `ModalSandboxProvider` adapter
-      (create/exec/write/read/terminate/expose_port).
-- [ ] Publish a **named Modal image** (`rift-sandbox`) baking Node + pnpm +
-      Engine Kit + Playwright/Chromium (built in CI).
+- [ ] `SandboxProvider` Protocol + `DaytonaSandboxProvider` adapter (plus optional `E2BSandboxProvider` fallback)
+      (create/exec/write_file/read_file/terminate).
+- [ ] Create a **pre-baked Daytona snapshot / image** (`rift-sandbox`) baking Node + pnpm +
+      Engine Kit + Playwright/Chromium.
 - [ ] `local` dev provider (Docker) behind the same interface.
 - [ ] **Engine Kit runtime** (`runtime/` modules) + `topdown-shooter` starter
       with `window.__RIFT__` hooks and baseline `vitest` tests.
@@ -1283,14 +1276,14 @@ blocks cleanly with a clear message.
 
 **Goal:** sandbox lifecycle predictable and cheap.
 
-- [ ] **Warm pool** of pre-created sandboxes (configurable depth).
-- [ ] Named sandboxes per project (prevent duplicate concurrent builds).
-- [ ] TTL + idle timeouts tuned; per-build resource profiles.
-- [ ] Provider failover: Modal → E2B/Daytona → self-host (config-driven).
+- [ ] **Warm pool / pre-built snapshots** of sandboxes.
+- [ ] Labeled sandboxes per project (prevent duplicate concurrent builds).
+- [ ] TTL + auto-stop timeouts tuned; per-build resource profiles.
+- [ ] Provider failover: Daytona → E2B → self-host (config-driven).
 - [ ] Self-host adapter (gVisor on a free VM) implemented behind the interface.
 - [ ] Sandbox cost dashboard.
 
-**DoD:** cold-start latency drops measurably; killing Modal access fails over
+**DoD:** cold-start latency drops measurably; killing Daytona access fails over to E2B
 without code changes.
 
 ---
@@ -1321,7 +1314,7 @@ across a project's builds is measurable.
 - [ ] LangSmith datasets + graders wired; regression report per PR.
 - [ ] **Demo mode**: stored golden build replayable with zero live cost.
 - [ ] README led by the studio diagram, a self-repair trace, and the scoreboard.
-- [ ] `DEPLOYMENT.md` (Northflank + Vercel + Neon + Upstash + R2 + Modal).
+- [ ] `DEPLOYMENT.md` (Northflank + Vercel + Neon + Upstash + R2 + Daytona/E2B).
 - [ ] Load sanity check; error budgets; runbooks in `docs/`.
 
 **DoD:** CI fails on a scoreboard regression; a visitor lands on a working demo
@@ -1407,12 +1400,11 @@ R2_SECRET_ACCESS_KEY=...
 R2_BUCKET=rift-artifacts
 R2_PUBLIC_BASE_URL=https://...
 # Sandbox
-SANDBOX_PROVIDER=modal            # modal|e2b|daytona|local
-MODAL_TOKEN_ID=...
-MODAL_TOKEN_SECRET=...
-MODAL_IMAGE=rift-sandbox
-E2B_API_KEY=...                   # optional
-DAYTONA_API_KEY=...               # optional
+SANDBOX_PROVIDER=daytona          # daytona|e2b|local
+DAYTONA_API_KEY=...
+DAYTONA_SNAPSHOT=rift-sandbox
+E2B_API_KEY=...                   # optional fallback
+E2B_TEMPLATE=rift-sandbox         # optional fallback
 # Scheduling
 QSTASH_TOKEN=...
 QSTASH_CURRENT_SIGNING_KEY=...
@@ -1443,7 +1435,9 @@ langchain-core = ">=1.5"
 deepagents = ">=0.7"
 langgraph-checkpoint-postgres = "*"
 langgraph-store-postgres = "*"     # or via langgraph-checkpoint-postgres extras
-modal = "*"
+daytona = "*"
+langchain-daytona = "*"
+e2b = "*"                          # optional fallback
 fastapi = ">=0.115"
 uvicorn = { extras = ["standard"] }
 pydantic = ">=2"
@@ -1469,13 +1463,8 @@ pytest = "*"; pytest-asyncio = "*"
 
 ### Verified free-tier facts (Oct 2026)
 
-- **Modal**: Starter $0 + compute, **$30/mo free credits (recurring)**, 100
-  containers, 1 TiB egress. Sandbox CPU $0.00003942/core/s, memory
-  $0.00000667/GiB/s. Sandbox default lifetime 5 min → set `timeout` (≤24h).
-  gVisor or VM runtime; named images; network blocking; snapshots.
-- **E2B**: RAM fixed at **template build** (up to 8 GiB Hobby); $100 one-time;
-  20 concurrent; 1 hr/session.
-- **Daytona**: $200 credit; Tier 1 (email verified) = 10 vCPU / 10 GiB / 30 GiB.
+- **Daytona (Primary)**: **$200 free credit** (no credit card required for Tier 1 email-verified = 10 vCPU / 10 GiB RAM / 30 GiB storage; 5 GiB free storage). Compute ~$0.0504/vCPU-hr, ~$0.0162/GiB-hr (~$0.011 per 4-min build), pure pay-as-you-go with no monthly base fee. Supports `AsyncDaytona`, custom snapshots/Docker images, `Resources(cpu, memory, disk)`, `auto_stop_interval`, and `langchain-daytona` for Deep Agents.
+- **E2B (Fallback)**: RAM fixed at **template build** (up to 8 GiB Hobby); **$100 one-time credit**; 20 concurrent; 1 hr max continuous session on Hobby (Pro jumps to $150/mo base fee).
 - **Northflank**: free = 2 services + 2 cron + 1 DB, **always-on (no sleeping)**;
   requires a payment method; licenses say not for production. PAYG
   $0.01667/vCPU-hr, $0.00833/GB-hr.
@@ -1498,7 +1487,7 @@ pytest = "*"; pytest-asyncio = "*"
   `create_supervisor`).
 - Deep Agents: planning tool, subagents, virtual filesystem, skills, context
   modes (`isolated` / `fork`), dynamic-subagent orchestration patterns.
-- Modal: Sandboxes (create/exec/lifetime/runtime/images/network/secrets/named).
+- Daytona & E2B: `AsyncDaytona` (`daytona`, `langchain-daytona`), `AsyncSandbox` (`e2b`).
 - Playwright: headless Chromium, console/pageerror capture, input simulation.
 - Neon: pgvector, pooled connections, scale-to-zero.
 - Cloudflare R2: S3-compatible API.

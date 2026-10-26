@@ -17,7 +17,7 @@
 6. [Module 5: Async Databases (`SQLAlchemy 2.0`, `Alembic`, Repository Pattern)](#module-5-async-databases-sqlalchemy-20-alembic-repository-pattern)
 7. [Module 6: Building the HTTP API & Live Streaming (`FastAPI` + `SSE`)](#module-6-building-the-http-api--live-streaming-fastapi--sse)
 8. [Module 7: Stateful Workflows & Agent Orchestration (`LangGraph` & `LangChain`)](#module-7-stateful-workflows--agent-orchestration-langgraph--langchain)
-9. [Module 8: Isolated Cloud Execution (`Modal` Sandboxes) & Object Storage (`S3 / R2`)](#module-8-isolated-cloud-execution-modal-sandboxes--object-storage-s3--r2)
+9. [Module 8: Isolated Cloud Execution (`Daytona` / `E2B` Sandboxes) & Object Storage (`S3 / R2`)](#module-8-isolated-cloud-execution-daytona--e2b-sandboxes--object-storage-s3--r2)
 10. [Module 9: Headless Browser Automation (`Playwright`)](#module-9-headless-browser-automation-playwright)
 11. [Module 10: Idempotency, Multi-Tenancy, and Background Webhooks (`Redis` & `QStash`)](#module-10-idempotency-multi-tenancy-and-background-webhooks-redis--qstash)
 12. [Suggested Study Order & Practice Roadmap](#suggested-study-order--practice-roadmap)
@@ -26,7 +26,7 @@
 
 ## Module 0: The Mental Model: How Modern Python Backends Are Layered
 
-When you look at a large backend plan, it feels overwhelming because you see 15 tools at once (Postgres, Redis, S3, FastAPI, LangGraph, Modal, Alembic, etc.).
+When you look at a large backend plan, it feels overwhelming because you see 15 tools at once (Postgres, Redis, S3, FastAPI, LangGraph, Daytona, Alembic, etc.).
 
 To make it simple, realize that **every backend is just 4 concentric rings**:
 
@@ -34,7 +34,7 @@ To make it simple, realize that **every backend is just 4 concentric rings**:
 ┌─────────────────────────────────────────────────────────────┐
 │ 4. Entrypoints (FastAPI routes, CLI commands, Cron workers) │
 │   ┌─────────────────────────────────────────────────────┐   │
-│   │ 3. Adapters (Postgres DB, S3/R2, Modal, OpenAI API) │   │
+│   │ 3. Adapters (Postgres DB, S3/R2, Daytona, OpenAI)   │   │
 │   │   ┌─────────────────────────────────────────────┐   │   │
 │   │   │ 2. Application / Workflows (LangGraph, Use  │   │   │
 │   │   │    Cases, Orchestration)                    │   │   │
@@ -49,7 +49,7 @@ To make it simple, realize that **every backend is just 4 concentric rings**:
 
 1. **Core Domain & Ports (Innermost):** Pure Python. Defines *what* things are (e.g., an `Invoice`, a `Customer`) and *what interfaces* you need (e.g., "I need something that can save a PDF"). Zero external libraries besides Pydantic/standard library.
 2. **Application / Workflows:** The step-by-step logic or state machine (e.g., `LangGraph`). It coordinates the work using the interfaces from Ring 1.
-3. **Adapters:** Concrete code that talks to the outside world (SQLAlchemy talking to Postgres, `boto3` talking to S3/R2, `modal` running a container).
+3. **Adapters:** Concrete code that talks to the outside world (SQLAlchemy talking to Postgres, `boto3` talking to S3/R2, `daytona` or `e2b` running a sandbox).
 4. **Entrypoints (Outermost):** FastAPI HTTP endpoints or background workers that receive a request from a user, wire the adapters into the workflow, and return/stream the result.
 
 **Why this matters:** You never have to build the whole system at once. You build from the **inside out** (Ring 1 → Ring 2 → Ring 3 → Ring 4).
@@ -183,7 +183,7 @@ class BakerySettings(BaseSettings):
 ## Module 3: Hexagonal Architecture (Ports & Adapters with `Protocol`)
 
 ### The Concept
-Why does your architecture forbid importing cloud SDKs (like AWS `boto3`, `modal`, or `stripe`) inside `core/`?
+Why does your architecture forbid importing cloud SDKs (like AWS `boto3`, `daytona`, `e2b`, or `stripe`) inside `core/`?
 Because if your core logic directly calls `boto3.client('s3').put_object(...)`:
 1. You cannot run unit tests without an internet connection or complex mocking.
 2. Switching from AWS S3 to local disk (for local dev) or Cloudflare R2 requires rewriting core logic.
@@ -404,6 +404,8 @@ async def stream_order_events(order_id: str) -> StreamingResponse:
 
 ## Module 7: Stateful Workflows & Agent Orchestration (`LangGraph` & `LangChain`)
 
+> **Dedicated Deep-Dive Guide:** For a complete, end-to-end guide using an unrelated domain ("ChartForge") that mirrors your exact studio topology (`spec → scaffold → implement → verify ⇄ repair → interrupt/approve → publish`, `create_deep_agent`, `functools.partial` port injection, and `AsyncPostgresSaver`), see **[LANGGRAPH_AGENTS_GUIDE.md](LANGGRAPH_AGENTS_GUIDE.md)**.
+
 Since you mentioned you will read the official LangGraph and LangChain docs, this module summarizes the **exact architectural patterns** from the docs so you know *what* to look for when reading them.
 
 ### Pattern 1: `StateGraph`, Nodes, and Conditional Edges
@@ -521,45 +523,60 @@ async def manager_review_node(state: InvoiceState) -> dict:
 
 ---
 
-## Module 8: Isolated Cloud Execution (`Modal` Sandboxes) & Object Storage (`S3 / R2`)
+## Module 8: Isolated Cloud Execution (`Daytona` / `E2B` Sandboxes) & Object Storage (`S3 / R2`)
 
-### Concept A: Why Cloud Sandboxes (`Modal`)?
+> **Dedicated Deep-Dive Guide:** For a complete, game-studio-specific walkthrough of how **Daytona + Playwright + Cloudflare R2** link together end-to-end in Rift, see **[SANDBOX_STORAGE_GUIDE.md](SANDBOX_STORAGE_GUIDE.md)**.
+
+### Concept A: Why Cloud Sandboxes (`Daytona` & `E2B`)?
 If an automated system generates Python or JavaScript code and needs to compile or test it, **you must never run `subprocess.run()` on your own FastAPI server**. Untrusted code could delete files, read your `.env` database passwords, or use 100% CPU.
 
-A **Sandbox** (like Modal Sandboxes) boots an isolated microVM container in ~1 second with no access to your secrets or network, runs the command, and destroys itself.
+A **Cloud Sandbox** (like **Daytona** or **E2B**) boots an isolated Linux container/microVM in sub-second time (`~90ms` from snapshot) with no access to your server's secrets, runs the command, and destroys itself.
 
-#### Unrelated Example: Running a Untrusted Data-Science Script in Modal
+#### Why Daytona (Primary) vs. E2B (Fallback)?
+- **Daytona (Primary):** Gives **$200 in free compute credits** (no credit card required for Tier 1 email-verified, 10 vCPU / 10 GiB RAM / 30 GiB storage pool), pure pay-as-you-go per-second pricing afterwards (no $150/month base fee), per-sandbox CPU/RAM sizing (`Resources`), custom snapshots/Docker images, and an official `langchain-daytona` backend for LangChain's `deepagents`.
+- **E2B (Fallback):** Firecracker microVMs with a **$100 one-time credit** on the Hobby tier (up to 20 concurrent sandboxes, 1-hour max session duration; Pro jumps to $150/mo base). Because both live behind your `SandboxProvider` Protocol, you can switch between them via `SANDBOX_PROVIDER=daytona|e2b`.
+
+#### Unrelated Example 1: Running an Untrusted Data-Science Script in Daytona (`AsyncDaytona`)
 ```python
-import modal
+from daytona import AsyncDaytona, CreateSandboxFromImageParams, Image, Resources
 
-async def run_csv_analysis_in_sandbox(csv_bytes: bytes, script_code: str) -> str:
-    app = modal.App.lookup("csv-analyzer-app", create_if_missing=True)
-    image = modal.Image.debian_slim().pip_install("pandas")
+async def run_csv_analysis_in_daytona(csv_bytes: bytes, script_code: str) -> str:
+    # Reads DAYTONA_API_KEY from environment automatically
+    async with AsyncDaytona() as daytona:
+        params = CreateSandboxFromImageParams(
+            image=Image.debian_slim("3.12").pip_install(["pandas"]),
+            resources=Resources(cpu=1, memory=1, disk=3),  # 1 vCPU, 1 GiB RAM, 3 GiB disk
+            auto_stop_interval=5,  # Auto-stop after 5 minutes of inactivity
+        )
+        sb = await daytona.create(params, timeout=120)
+        try:
+            # 1. Upload files into the sandbox filesystem
+            await sb.fs.upload_file(csv_bytes, "/tmp/data.csv")
+            await sb.fs.upload_file(script_code.encode("utf-8"), "/tmp/analyze.py")
 
-    # 1. Create an isolated container with strict CPU/RAM/Timeout limits
-    sb = await modal.Sandbox.create.aio(
-        app=app,
-        image=image,
-        cpu=1.0,
-        memory=1024,      # 1 GiB
-        timeout=120,      # Kill after 2 minutes max
-        block_network=True,  # Prevent untrusted code from phoning home!
-    )
+            # 2. Execute command inside the sandbox
+            response = await sb.process.exec("python /tmp/analyze.py", timeout=30)
+            return response.result
+        finally:
+            # 3. ALWAYS delete the sandbox in a finally block so you don't leak billing!
+            await daytona.delete(sb)
+```
+
+#### Unrelated Example 2: The Same Pattern in E2B (`AsyncSandbox`)
+```python
+from e2b import AsyncSandbox
+
+async def run_csv_analysis_in_e2b(csv_bytes: bytes, script_code: str) -> str:
+    # Reads E2B_API_KEY from environment automatically
+    sb = await AsyncSandbox.create(timeout=120)
     try:
-        # 2. Write files into the sandbox
-        async with await sb.open.aio("/tmp/data.csv", "wb") as f:
-            await f.write.aio(csv_bytes)
-        async with await sb.open.aio("/tmp/analyze.py", "w") as f:
-            await f.write.aio(script_code)
+        await sb.files.write("/tmp/data.csv", csv_bytes)
+        await sb.files.write("/tmp/analyze.py", script_code)
 
-        # 3. Execute command inside the sandbox
-        proc = await sb.exec.aio("python", "/tmp/analyze.py", timeout=30)
-        await proc.wait.aio()
-        stdout = await proc.stdout.read.aio()
-        return stdout
+        result = await sb.commands.run("python3 /tmp/analyze.py", timeout=30)
+        return result.stdout
     finally:
-        # 4. ALWAYS terminate the sandbox in a finally block so you don't leak billing!
-        await sb.terminate.aio()
+        await sb.kill()
 ```
 
 ### Concept B: Content-Addressed Object Storage (`S3 / Cloudflare R2`)
@@ -694,6 +711,6 @@ Don't try to learn all 10 modules in one day. Learn them **just-in-time** right 
 |---|---|---|
 | **Step 1 (Day 1–2)** | **Modules 1, 2, & 3:** Set up `uv` `src`-layout, write pure `Pydantic` models, `pydantic-settings`, and a `Protocol` interface with an in-memory fake adapter. Write a `pytest` test for it. | `uv`, `Pydantic`, `Protocol`, `pytest` |
 | **Step 2 (Day 3–4)** | **Modules 4 & 5:** Spin up local Postgres in Docker Compose. Define 2 simple tables in `SQLAlchemy 2.0` async, generate an `Alembic` migration, and write a Repository class with `pytest-asyncio` tests. | `asyncio`, `SQLAlchemy`, `Alembic` |
-| **Step 3 (Day 5–6)** | **Module 8 & 9:** Write a standalone 40-line Python script that boots a `Modal` sandbox (or local Docker container), runs a build command inside it, opens the output in headless `Playwright`, and uploads a file to local MinIO / S3. | `Modal`, `Playwright`, `boto3` |
+| **Step 3 (Day 5–6)** | **Module 8 & 9:** Write a standalone 40-line Python script that boots a `Daytona` (or `E2B` / local Docker) sandbox, runs a build command inside it, opens the output in headless `Playwright`, and uploads a file to local MinIO / S3. | `Daytona`, `Playwright`, `boto3` |
 | **Step 4 (Day 7–10)** | **Module 7:** Dive into the official **LangGraph** & **LangChain** docs. Build a tiny 3-node graph (`extract → verify → repair`) with `InMemorySaver`, then swap in `AsyncPostgresSaver` and test `interrupt()` / `Command(resume=...)`. | `LangGraph`, `LangChain`, Checkpointers, HITL |
 | **Step 5 (Day 11+)** | **Modules 6 & 10:** Wrap your working graph in `FastAPI` endpoints, stream node transitions over `SSE`, and add tenant scoping + idempotent usage tracking. | `FastAPI`, `SSE`, Multi-tenancy |
