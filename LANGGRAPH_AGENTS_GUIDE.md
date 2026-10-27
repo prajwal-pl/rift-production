@@ -12,13 +12,14 @@
 
 1. [The Mental Model: Why a State Graph Instead of a Plain `while` Loop?](#1-the-mental-model-why-a-state-graph-instead-of-a-plain-while-loop)
 2. [The Complete Topology We Are Building ("ChartForge")](#2-the-complete-topology-we-are-building-chartforge)
-3. [Part 1: Designing the Graph State (`TypedDict` & Reducers)](#3-part-1-designing-the-graph-state-typeddict--reducers)
-4. [Part 2: Structured Output (`with_structured_output`) — The Spec Node](#4-part-2-structured-output-with_structured_output--the-spec-node)
-5. [Part 3: Coding Agents, Tools & Subagents (`create_deep_agent`)](#5-part-3-coding-agents-tools--subagents-create_deep_agent)
-6. [Part 4: Deterministic Verification + Bounded Self-Repair Loop](#6-part-4-deterministic-verification--bounded-self-repair-loop)
-7. [Part 5: Human-in-the-Loop (`interrupt` & `Command(resume=...)`)](#7-part-5-human-in-the-loop-interrupt--commandresume)
-8. [Part 6: Wiring the Complete `StateGraph` & Dependency Injection](#8-part-6-wiring-the-complete-stategraph--dependency-injection)
-9. [Part 7: Durability (`AsyncPostgresSaver`) & Live SSE Streaming (`astream`)](#9-part-7-durability-asyncpostgressaver--live-sse-streaming-astream)
+3. [Directory Structure & File Organization (Where Every File Lives)](#3-directory-structure--file-organization-where-every-file-lives)
+4. [Part 1: Designing the Graph State (`TypedDict` & Reducers)](#4-part-1-designing-the-graph-state-typeddict--reducers)
+5. [Part 2: Structured Output (`with_structured_output`) — The Spec Node](#5-part-2-structured-output-with_structured_output--the-spec-node)
+6. [Part 3: Coding Agents, Tools & Subagents (`create_deep_agent`)](#6-part-3-coding-agents-tools--subagents-create_deep_agent)
+7. [Part 4: Deterministic Verification + Bounded Self-Repair Loop](#7-part-4-deterministic-verification--bounded-self-repair-loop)
+8. [Part 5: Human-in-the-Loop (`interrupt` & `Command(resume=...)`)](#8-part-5-human-in-the-loop-interrupt--commandresume)
+9. [Part 6: Wiring the Complete `StateGraph` & Dependency Injection](#9-part-6-wiring-the-complete-stategraph--dependency-injection)
+10. [Part 7: Durability (`AsyncPostgresSaver`) & Live SSE Streaming (`astream`)](#10-part-7-durability-asyncpostgressaver--live-sse-streaming-astream)
 
 ---
 
@@ -100,7 +101,74 @@ Notice how **every node in this diagram has a 1-to-1 counterpart in your own pro
 
 ---
 
-## 3. Part 1: Designing the Graph State (`TypedDict` & Reducers)
+## 3. Directory Structure & File Organization (Where Every File Lives)
+
+A common mistake with LangGraph is dumping the `TypedDict` state, Pydantic schemas, `@tool` definitions, agent prompts, node functions, and `StateGraph` wiring into one giant 800-line file.
+
+Instead, split your agent studio into **5 clean folders** (`core/`, `toolbox/`, `agents/`, `studio/`, `memory/`):
+
+### File Tree (ChartForge Example mapped 1-to-1 to `src/rift/`)
+
+```text
+src/rift/                              # (Or src/chartforge/ in our unrelated example)
+├─ core/
+│  ├─ domain/
+│  │  ├─ schemas.py                    # Core entities (Project, Build, Artifact)
+│  │  └─ gdd.py                        # Structured output Pydantic models (e.g. WidgetSpec / GDD)
+│  └─ ports/
+│     ├─ sandbox.py                    # `SandboxProvider` Protocol
+│     └─ storage.py                    # `StorageProvider` Protocol
+│
+├─ toolbox/                            # 1. TOOLS (Bound to SandboxProvider for agents to call)
+│  ├─ __init__.py
+│  └─ sandbox_tools.py                 # `make_sandbox_tools(sandbox, sandbox_id)` -> @tool list
+│
+├─ agents/                             # 2. AGENT FACTORIES (LLM configs, prompts & Deep Agents)
+│  ├─ __init__.py
+│  ├─ designer.py                      # Builds the `.with_structured_output()` spec/GDD LLM
+│  ├─ coder.py                         # Builds the `create_deep_agent()` coding agent
+│  └─ repair.py                        # Builds the `create_deep_agent()` surgical bug-fix agent
+│
+├─ studio/                             # 3. THE LANGGRAPH STATE MACHINE
+│  ├─ __init__.py
+│  ├─ state.py                         # `StudioState(TypedDict)` + status literals + reducers
+│  ├─ nodes.py                         # Node functions (`spec_node`, `scaffold_node`, `verify_node`, etc.)
+│  ├─ routing.py                       # Pure conditional edge routers (`route_after_verify`, `route_after_approval`)
+│  └─ graph.py                         # `build_studio_graph()` -> wires StateGraph & compiles it
+│
+├─ memory/                             # 4. CHECKPOINTER & LONG-TERM STORE
+│  ├─ __init__.py
+│  └─ checkpointer.py                  # `AsyncPostgresSaver` context manager & `.setup()` helper
+│
+└─ api/                                # 5. ENTRYPOINTS (FastAPI routes / CLI runner)
+   └─ builds.py                        # Starts `graph.astream()` and resumes via `Command(resume=...)`
+```
+
+### How Imports Flow Across These Files (No Circular Imports!)
+```text
+core/ports/  +  core/domain/
+      ▲               ▲
+      │               │
+  toolbox/         agents/
+      ▲               ▲
+      └───────┬───────┘
+              │
+        studio/nodes.py  +  studio/routing.py  +  studio/state.py
+              ▲
+              │
+        studio/graph.py  +  memory/checkpointer.py
+              ▲
+              │
+         api/builds.py (or tests/test_studio_graph.py)
+```
+- **`studio/state.py`** imports **nothing** from your project (only standard library `typing` and `langgraph.graph.message`).
+- **`toolbox/` and `agents/`** import only from `core/ports/` and `core/domain/`.
+- **`studio/nodes.py`** imports `StudioState` from `studio/state.py`, tools from `toolbox/`, and agent builders from `agents/`.
+- **`studio/graph.py`** imports nodes from `studio/nodes.py` and routers from `studio/routing.py`, wires them into `StateGraph`, and returns the compiled graph.
+
+---
+
+## 4. Part 1: Designing the Graph State (`TypedDict` & Reducers)
 
 ### Theory: How State Flows Through LangGraph
 1. **The State is a single `TypedDict`:** Every node receives `state: ChartStudioState` as its first parameter.
@@ -110,6 +178,7 @@ Notice how **every node in this diagram has a 1-to-1 counterpart in your own pro
    - For lists like `messages` (chat history) or `failures`, if you want a node to **append** new items rather than overwrite the list, you use `Annotated[list, operator.add]` or `Annotated[list, add_messages]`.
 
 ```python
+# File: src/chartforge/studio/state.py (or src/rift/studio/state.py)
 import operator
 from typing import Annotated, Any, Literal, TypedDict
 from langgraph.graph.message import add_messages
@@ -168,7 +237,7 @@ class ChartStudioState(TypedDict, total=False):
 
 ---
 
-## 4. Part 2: Structured Output (`with_structured_output`) — The Spec Node
+## 5. Part 2: Structured Output (`with_structured_output`) — The Spec Node
 
 ### Theory: Never Parse Raw LLM Text with `json.loads()`
 If you prompt an LLM *"Return a JSON object describing the chart"*, 5% of the time it will wrap the JSON in ` ```json ... ``` `, miss a required field, or invent an unsupported chart type.
@@ -176,6 +245,8 @@ If you prompt an LLM *"Return a JSON object describing the chart"*, 5% of the ti
 Instead, LangChain's `.with_structured_output(PydanticModel)` forces the model (via tool-calling / constrained decoding) to return an instance of your **Pydantic model**—already validated!
 
 ```python
+# File: src/chartforge/core/domain/spec.py (or src/rift/core/domain/gdd.py)
+# and src/chartforge/studio/nodes.py (spec_node)
 from typing import Literal
 from pydantic import BaseModel, Field
 from langchain.chat_models import init_chat_model
@@ -217,7 +288,7 @@ async def spec_node(state: ChartStudioState) -> dict[str, Any]:
 
 ---
 
-## 5. Part 3: Coding Agents, Tools & Subagents (`create_deep_agent`)
+## 6. Part 3: Coding Agents, Tools & Subagents (`create_deep_agent`)
 
 ### Theory: How the Coding Step Works
 Once `spec_node` produces a structured `WidgetSpec` and `scaffold_node` boots a sandbox, the **Coder Agent** needs to read and write files inside that sandbox.
@@ -226,6 +297,7 @@ How do we give a LangChain / Deep Agent access to our `SandboxProvider` Protocol
 **Closure-bound `@tool` factories!** You write a small function `make_sandbox_tools(sandbox, sandbox_id)` that returns `@tool` functions bound to that specific build's `sandbox_id`.
 
 ```python
+# File: src/chartforge/toolbox/sandbox_tools.py (or src/rift/toolbox/sandbox_tools.py)
 from langchain_core.tools import BaseTool, tool
 from deepagents import create_deep_agent
 from rift.core.ports.sandbox import SandboxProvider
@@ -261,6 +333,7 @@ def make_sandbox_tools(sandbox: SandboxProvider, sandbox_id: str) -> list[BaseTo
 `create_deep_agent` wraps a model + tools with a built-in **TODO planning tool** and **subagent delegation** (`subagents=[...]`) so complex coding work doesn't overflow a single context window:
 
 ```python
+# File: src/chartforge/studio/nodes.py (or src/rift/studio/nodes.py)
 async def implement_node(
     state: ChartStudioState,
     *,
@@ -298,7 +371,7 @@ async def implement_node(
 
 ---
 
-## 6. Part 4: Deterministic Verification + Bounded Self-Repair Loop
+## 7. Part 4: Deterministic Verification + Bounded Self-Repair Loop
 
 ### Theory: Why `verify_node` Must Be 100% Deterministic
 If you ask an LLM *"Look at your code—does it have any bugs?"*, the LLM will happily say *"Everything looks great!"* even when the code crashes on line 3.
@@ -309,6 +382,8 @@ Instead:
 3. **`repair_node` is an LLM agent** that only runs when `verify_node` found real errors. It receives the exact compiler/browser error trace, edits the broken file, and loops back into `verify_node`.
 
 ```python
+# File: src/chartforge/studio/nodes.py (verify_node, repair_node)
+# and src/chartforge/studio/routing.py (route_after_verify)
 from typing import Literal
 
 
@@ -407,7 +482,7 @@ async def repair_node(
 
 ---
 
-## 7. Part 5: Human-in-the-Loop (`interrupt` & `Command(resume=...)`)
+## 8. Part 5: Human-in-the-Loop (`interrupt` & `Command(resume=...)`)
 
 ### Theory: How `interrupt()` Actually Works Under the Hood
 When a node calls `decision = interrupt(payload)`:
@@ -421,6 +496,8 @@ When a node calls `decision = interrupt(payload)`:
 > 3. **Keep `interrupt()` payloads and `Command(resume=...)` values pure JSON dicts.**
 
 ```python
+# File: src/chartforge/studio/nodes.py (await_approval_node)
+# and src/chartforge/studio/routing.py (route_after_approval)
 from langgraph.types import Command, interrupt
 
 
@@ -466,13 +543,14 @@ def route_after_approval(
 
 ---
 
-## 8. Part 6: Wiring the Complete `StateGraph` & Dependency Injection
+## 9. Part 6: Wiring the Complete `StateGraph` & Dependency Injection
 
 ### Theory: How Do Nodes Receive `sandbox: SandboxProvider` and `storage: StorageProvider`?
 LangGraph nodes expect the signature `async def my_node(state: ChartStudioState) -> dict`.
 To inject your ports (`sandbox: SandboxProvider`, `storage: StorageProvider`) without global variables, wrap your builder in a factory function `build_chart_studio_graph(sandbox, storage, checkpointer)` using `functools.partial`:
 
 ```python
+# File: src/chartforge/studio/graph.py (or src/rift/studio/graph.py)
 from functools import partial
 from typing import Any
 from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -581,13 +659,15 @@ def build_chart_studio_graph(
 
 ---
 
-## 9. Part 7: Durability (`AsyncPostgresSaver`) & Live SSE Streaming (`astream`)
+## 10. Part 7: Durability (`AsyncPostgresSaver`) & Live SSE Streaming (`astream`)
 
 ### 1. Running in Unit Tests (`InMemorySaver`) vs. Production (`AsyncPostgresSaver`)
 - **In `pytest`:** Pass `InMemorySaver()` + `FakeSandboxProvider()` + `InMemoryStorageProvider()`. Your entire multi-agent state machine runs in memory in milliseconds.
 - **In Production:** Use `AsyncPostgresSaver.from_conn_string(postgres_url)` (note: `AsyncPostgresSaver` uses standard `postgresql://...` with `psycopg`, whereas SQLAlchemy uses `postgresql+asyncpg://...`).
 
 ```python
+# File: src/chartforge/memory/checkpointer.py & src/chartforge/api/builds.py
+# (or src/rift/memory/checkpointer.py & src/rift/api/builds.py)
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.types import Command
 

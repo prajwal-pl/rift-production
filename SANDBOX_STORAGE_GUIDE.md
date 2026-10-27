@@ -10,19 +10,20 @@
 ## Table of Contents
 
 1. [The Big Picture: How Daytona, Playwright & R2 Connect](#1-the-big-picture-how-daytona-playwright--r2-connect)
-2. [Part 1: Daytona Cloud Sandboxes (`AsyncDaytona`)](#2-part-1-daytona-cloud-sandboxes-asyncdaytona)
+2. [Directory Structure & File Trees (Where Every File Lives)](#2-directory-structure--file-trees-where-every-file-lives)
+3. [Part 1: Daytona Cloud Sandboxes (`AsyncDaytona`)](#3-part-1-daytona-cloud-sandboxes-asyncdaytona)
    - [Theory: What is a Daytona Sandbox?](#theory-what-is-a-daytona-sandbox)
    - [Daytona Python SDK Reference](#daytona-python-sdk-reference)
    - [Implementing the `DaytonaSandboxProvider` Adapter](#implementing-the-daytonasandboxprovider-adapter)
-3. [Part 2: Headless Browser Verification (`Playwright`)](#3-part-2-headless-browser-verification-playwright)
+4. [Part 2: Headless Browser Verification (`Playwright`)](#4-part-2-headless-browser-verification-playwright)
    - [Theory: Why Static Checks (`tsc` / `vite build`) Are Not Enough](#theory-why-static-checks-tsc--vite-build-are-not-enough)
    - [The `window.__RIFT__` Test Bridge](#the-window__rift__-test-bridge)
    - [How Playwright Runs Inside the Daytona Sandbox](#how-playwright-runs-inside-the-daytona-sandbox)
-4. [Part 3: Cloudflare R2 Object Storage (`boto3`)](#4-part-3-cloudflare-r2-object-storage-boto3)
+5. [Part 3: Cloudflare R2 Object Storage (`boto3`)](#5-part-3-cloudflare-r2-object-storage-boto3)
    - [Theory: Content-Addressed Storage & `ContentType`](#theory-content-addressed-storage--contenttype)
    - [Cloudflare R2 + `boto3` Reference](#cloudflare-r2--boto3-reference)
    - [Implementing the `R2StorageProvider` Adapter](#implementing-the-r2storageprovider-adapter)
-5. [Part 4: Putting It All Together — Linking Daytona → Playwright → R2](#5-part-4-putting-it-all-together--linking-daytona--playwright--r2)
+6. [Part 4: Putting It All Together — Linking Daytona → Playwright → R2](#6-part-4-putting-it-all-together--linking-daytona--playwright--r2)
 
 ---
 
@@ -68,7 +69,85 @@ When your AI agent writes TypeScript/Phaser game code, **three things must happe
 
 ---
 
-## 2. Part 1: Daytona Cloud Sandboxes (`AsyncDaytona`)
+## 2. Directory Structure & File Trees (Where Every File Lives)
+
+When working with cloud sandboxes and object storage, there are **three separate file trees** to keep in mind:
+1. **Your Local Project Repository (`rift/`)** — where your Python backend code, Ports, Adapters, and Playwright harness scripts live.
+2. **Inside the Remote Daytona Sandbox (`/workspace/`)** — the temporary Linux filesystem created per build and destroyed when the build finishes.
+3. **Inside Your Cloudflare R2 Bucket (`rift-artifacts`)** — the permanent cloud storage keys served to the browser `<iframe>`.
+
+### Tree 1: Your Local Project Repository (`rift/`)
+```text
+rift/
+├─ packages/
+│  └─ engine-kit/
+│     ├─ runtime/
+│     │  └─ debug.ts                  # Defines window.__RIFT__ test hooks in the game
+│     └─ starters/
+│        └─ topdown-shooter/          # Starter template copied into Daytona at build start
+├─ src/
+│  └─ rift/
+│     ├─ config.py                    # Reads DAYTONA_API_KEY, R2_*, etc. from .env
+│     ├─ core/
+│     │  └─ ports/                    # 1. PORTS (Pure Python Protocols — no SDK imports!)
+│     │     ├─ __init__.py
+│     │     ├─ sandbox.py             #    Defines `SandboxProvider` & `ExecResult`
+│     │     └─ storage.py             #    Defines `StorageProvider`
+│     ├─ adapters/                    # 2. ADAPTERS (Concrete cloud & in-memory plugins)
+│     │  ├─ __init__.py
+│     │  ├─ memory.py                 #    `FakeSandboxProvider` & `InMemoryStorageProvider` (for pytest)
+│     │  ├─ daytona.py                #    `DaytonaSandboxProvider` (uses `AsyncDaytona` SDK)
+│     │  ├─ e2b.py                    #    `E2BSandboxProvider` (optional fallback using `e2b`)
+│     │  └─ r2.py                     #    `R2StorageProvider` (uses `boto3` S3 client)
+│     └─ verify/                      # 3. VERIFICATION HARNESS
+│        ├─ __init__.py
+│        ├─ harness_script.py         #    The Playwright script uploaded into Daytona's `/workspace/verify_game.py`
+│        └─ runner.py                 #    Python helper that invokes `sandbox.exec` & parses the Verdict JSON
+└─ tests/
+   ├─ unit/
+   │  └─ test_pipeline_memory.py      # Fast offline tests using `adapters/memory.py`
+   └─ integration/
+      └─ test_daytona_r2_live.py      # Live cloud test using `daytona.py` + `r2.py`
+```
+
+### Tree 2: Inside the Remote Daytona Sandbox (`/workspace/`)
+When `DaytonaSandboxProvider.create()` boots a container, files inside that container are organized under `/workspace/`:
+```text
+/workspace/                           # Working directory inside the Daytona container
+├─ package.json                       # From packages/engine-kit/starters/topdown-shooter
+├─ tsconfig.json
+├─ vite.config.ts
+├─ index.html
+├─ src/
+│  ├─ main.ts                         # Engine Kit boot + window.__RIFT__ initialization
+│  └─ scenes/
+│     └─ GameScene.ts                 # Written/modified by your Coding Agent via `sandbox.write_file()`
+├─ dist/                              # Created when `sandbox.exec(["pnpm", "vite", "build"])` runs
+│  ├─ index.html                      # Compiled game entry point (downloaded by backend -> uploaded to R2)
+│  └─ assets/
+│     └─ index-a1b2c3.js              # Bundled Phaser + game code
+├─ verify_game.py                     # Uploaded by backend (`src/rift/verify/harness_script.py`)
+├─ screenshot_t0.png                  # Created by Playwright before input (downloaded -> uploaded to R2)
+└─ screenshot_t1.png                  # Created by Playwright after input (downloaded -> uploaded to R2)
+```
+
+### Tree 3: Inside Your Cloudflare R2 Bucket (`rift-artifacts`)
+Once your backend downloads `dist/` and the `.png` screenshots from Daytona using `sandbox.read_file()`, it uploads them to R2 under these keys:
+```text
+rift-artifacts (Cloudflare R2 Bucket)
+└─ builds/
+   └─ <build_id>/                     # e.g., builds/bld_01J9XYZ.../
+      ├─ dist/
+      │  ├─ index.html                # Public URL loaded inside Next.js <iframe sandbox>
+      │  └─ assets/
+      │     └─ index-a1b2c3.js
+      ├─ screenshot_t0.png            # Shown in the Studio UI timeline / VerdictPanel
+      └─ screenshot_t1.png            # Shown in the Studio UI timeline / VerdictPanel
+```
+
+---
+
+## 3. Part 1: Daytona Cloud Sandboxes (`AsyncDaytona`)
 
 ### Theory: What is a Daytona Sandbox?
 A Daytona Sandbox is an isolated Linux environment managed via an API:
@@ -107,6 +186,7 @@ uv add daytona
 Here is how Daytona plugs directly into your [`SandboxProvider`](src/rift/core/ports/sandbox.py) port in `src/rift/adapters/daytona.py`:
 
 ```python
+# File: src/rift/adapters/daytona.py
 import shlex
 from daytona import (
     AsyncDaytona,
@@ -176,7 +256,7 @@ class DaytonaSandboxProvider(SandboxProvider):
 
 ---
 
-## 3. Part 2: Headless Browser Verification (`Playwright`)
+## 4. Part 2: Headless Browser Verification (`Playwright`)
 
 ### Theory: Why Static Checks (`tsc` / `vite build`) Are Not Enough
 In Phaser 3 / HTML5 Canvas games, a project can compile with **zero TypeScript errors** (`tsc --noEmit` exits `0`) and bundle cleanly (`vite build` exits `0`), yet still be completely broken when a player opens it:
@@ -217,7 +297,8 @@ Inside the Daytona sandbox, after `pnpm vite build` produces `/workspace/dist/`,
 6. Prints a structured JSON `Verdict` to `stdout`.
 
 ```python
-# This script runs INSIDE the Daytona sandbox (or local verify harness)
+# File: src/rift/verify/harness_script.py
+# (Uploaded into the Daytona sandbox as `/workspace/verify_game.py`)
 import asyncio
 import functools
 import http.server
@@ -299,7 +380,7 @@ if __name__ == "__main__":
 
 ---
 
-## 4. Part 3: Cloudflare R2 Object Storage (`boto3`)
+## 5. Part 3: Cloudflare R2 Object Storage (`boto3`)
 
 ### Theory: Content-Addressed Storage & `ContentType`
 Once Playwright verifies the game inside Daytona, your backend downloads the built files (`dist/index.html`, `dist/assets/index.js`, `screenshot_t0.png`) from Daytona into Python memory (`bytes`) and uploads them to **Cloudflare R2**.
@@ -337,6 +418,7 @@ uv add boto3
 Here is how Cloudflare R2 implements your [`StorageProvider`](src/rift/core/ports/storage.py) Protocol in `src/rift/adapters/r2.py`, including automatic content-addressing (`SHA-256`) and MIME type detection:
 
 ```python
+# File: src/rift/adapters/r2.py
 import asyncio
 import hashlib
 import mimetypes
@@ -411,7 +493,7 @@ class R2StorageProvider(StorageProvider):
 
 ---
 
-## 5. Part 4: Putting It All Together — Linking Daytona → Playwright → R2
+## 6. Part 4: Putting It All Together — Linking Daytona → Playwright → R2
 
 Here is a complete, realistic workflow function showing how your **LangGraph Studio** (or a standalone test script) uses `SandboxProvider` (Daytona) and `StorageProvider` (Cloudflare R2) together:
 
@@ -423,6 +505,7 @@ Here is a complete, realistic workflow function showing how your **LangGraph Stu
 6. Tears down the Daytona sandbox in `finally`.
 
 ```python
+# File: src/rift/verify/runner.py (or tests/integration/test_daytona_r2_live.py)
 import json
 from rift.core.ports.sandbox import SandboxProvider
 from rift.core.ports.storage import StorageProvider
