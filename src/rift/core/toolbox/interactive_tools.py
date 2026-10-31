@@ -15,7 +15,7 @@ def ask_user(questions: list[Question]):
         {"type": "clarification", "questions": [q.model_dump() for q in questions]}
     )
     lines = [
-        f" - {q.id}: {answer.get(q.id, '(no answer - choose a sensible default and list it as an assumption')}"
+        f" - {q.id}: {answer.get(q.id, '(no answer - choose a sensible default and list it as an assumption)')}"
         for q in questions
     ]
     return "User answers: \n" + "\n".join(lines)

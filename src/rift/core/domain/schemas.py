@@ -5,9 +5,12 @@ from pydantic import BaseModel, EmailStr, Field
 
 BuildStatus = Literal[
     "queued",
+    "planning",
+    "awaiting_input",
     "designing",
     "building",
     "verifying",
+    "reviewing",
     "repairing",
     "awaiting_approval",
     "published",
@@ -55,6 +58,7 @@ class Build(BaseModel):
     org_id: str
     prompt: str
     status: BuildStatus = "queued"
+    brief: dict[str, Any] = Field(default_factory=dict)
     gdd: dict[str, Any] = Field(default_factory=dict)
     plan: list[dict[str, Any]] = Field(default_factory=list)
     verify_report: dict[str, Any] = Field(default_factory=dict)

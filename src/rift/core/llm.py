@@ -4,12 +4,13 @@ from langchain_openrouter import ChatOpenRouter
 
 from rift.config import get_settings
 
-Role = Literal["plan", "design", "coder", "review"]
+Role = Literal["plan", "design", "coder", "code", "review"]
 
 MODEL_BY_ROLE: dict[Role, str] = {
     "plan": "nvidia/nemotron-3.5-super-vl:free",
     "design": "nvidia/nemotron-3.5-super-vl:free",
     "coder": "nvidia/nemotron-3.5-super-vl:free",
+    "code": "nvidia/nemotron-3.5-super-vl:free",
     "review": "nvidia/nemotron-3.5-super-vl:free",
 }
 
@@ -17,6 +18,7 @@ TEMPERATURE: dict[Role, float] = {
     "plan": 0.4,
     "design": 0.5,
     "coder": 0.2,
+    "code": 0.2,
     "review": 0.0,
 }
 

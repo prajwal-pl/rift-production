@@ -243,6 +243,7 @@ class BuildRepository:
         *,
         org_id: str,
         build_id: str,
+        brief: dict[str, Any] | None = None,
         gdd: dict[str, Any] | None = None,
         plan: list[dict[str, Any]] | None = None,
         verify_report: dict[str, Any] | None = None,
@@ -251,6 +252,8 @@ class BuildRepository:
         row = await self.get_by_id(org_id=org_id, build_id=build_id)
         if row is None:
             return None
+        if brief is not None:
+            row.brief = brief
         if gdd is not None:
             row.gdd = gdd
         if plan is not None:

@@ -38,9 +38,12 @@ class Visibility(StrEnum):
 
 class BuildStatus(StrEnum):
     QUEUED = "queued"
+    PLANNING = "planning"
+    AWAITING_INPUT = "awaiting_input"
     DESIGNING = "designing"
     BUILDING = "building"
     VERIFYING = "verifying"
+    REVIEWING = "reviewing"
     REPAIRING = "repairing"
     AWAITING_APPROVAL = "awaiting_approval"
     PUBLISHED = "published"
@@ -52,7 +55,7 @@ class ArtifactKind(StrEnum):
     SOURCE = "source"
     SCREENSHOT = "screenshot"
     TRACE = "trace"
-    STATIC_BUNDLE = "static-bundle"
+    STATIC_BUNDLE = "static_bundle"
 
 
 class User(Base):
@@ -117,6 +120,9 @@ class Build(Base):
     )
     prompt: Mapped[str] = mapped_column(String())
     status: Mapped[BuildStatus] = mapped_column(default=BuildStatus.QUEUED)
+    brief: Mapped[dict[str, Any]] = mapped_column(
+        MutableDict.as_mutable(JSONB), default=dict
+    )
     gdd: Mapped[dict[str, Any]] = mapped_column(
         MutableDict.as_mutable(JSONB), default=dict
     )

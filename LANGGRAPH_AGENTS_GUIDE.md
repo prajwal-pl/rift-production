@@ -173,18 +173,22 @@ uv add langgraph deepagents "langgraph-checkpoint-postgres" "psycopg[binary,pool
 uv add fastapi "uvicorn[standard]" sse-starlette       # API layer (§16)
 ```
 
-`config.py` additions:
+`config.py` additions (already applied in the repo):
 
 ```python
 class RiftSettings(BaseSettings):
     ...
-    daytona_snapshot: str = "rift-sandbox"   # snapshot with node, pnpm, playwright + chromium preinstalled
-    r2_account_id: str | None = None
-    r2_bucket: str = "rift-artifacts"
-    r2_public_base_url: str = ""              # e.g. https://play.rift.example  (custom domain, NOT r2.dev)
-    max_attempts: int = 4                     # reused as max coder rounds
-    token_budget: int = 250_000
+    daytona_snapshot: str | None = None      # prebuilt snapshot (node, pnpm, playwright); None = Daytona default
+    r2_account_id: str | None = None         # from the Cloudflare R2 overview page
+    r2_bucket: str = "rift-storage"
+    r2_public_base_url: str = ""             # custom domain bound to the bucket (NOT r2.dev)
+
+    @property
+    def r2_endpoint_url(self) -> str | None: # https://<account_id>.r2.cloudflarestorage.com
+        ...
 ```
+
+Matching `.env` keys: `R2_ACCESS_KEY`, `R2_SECRET_ACCESS_KEY` (S3 API token, **not** `ACCOUNT_TOKEN`), `R2_ACCOUNT_ID`, `R2_BUCKET`, `R2_PUBLIC_BASE_URL`, `DATABASE_URL`, `DAYTONA_API_KEY`, `OPENROUTER_API_KEY`, optional `DAYTONA_SNAPSHOT`.
 
 **Two different Postgres URLs.** SQLAlchemy uses `postgresql+asyncpg://…` (your `normalize_database_url`). The LangGraph checkpointer uses **psycopg**, which needs plain `postgresql://…`. Derive it, don't duplicate it (§14).
 
@@ -1374,7 +1378,7 @@ Put these in `CODER_AGENT_PROMPT` as hard constraints: **no external URLs/CDNs, 
 ### 15.2 Upload (already in `publish`, §11)
 
 ```text
-R2 bucket: rift-artifacts
+R2 bucket: rift-storage
 └─ builds/<build_id>/
    ├─ index.html        # Content-Type: text/html; charset=utf-8   ← the iframe src
    ├─ screenshot_t0.png # shown in the Studio timeline

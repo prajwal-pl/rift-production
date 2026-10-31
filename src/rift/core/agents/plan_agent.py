@@ -16,7 +16,7 @@ def build_plan_agent():
         response_format=ToolStrategy(GameBrief),
         middleware=[
             ToolCallLimitMiddleware(
-                tool_name="ask_user", run_limit=5, exit_behavior="continue"
+                tool_name="ask_user", run_limit=3, exit_behavior="continue"
             )
         ],
         name="planner",

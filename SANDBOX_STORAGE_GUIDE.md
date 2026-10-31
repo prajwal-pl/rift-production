@@ -74,7 +74,7 @@ When your AI agent writes TypeScript/Phaser game code, **three things must happe
 When working with cloud sandboxes and object storage, there are **three separate file trees** to keep in mind:
 1. **Your Local Project Repository (`rift/`)** — where your Python backend code, Ports, Adapters, and Playwright harness scripts live.
 2. **Inside the Remote Daytona Sandbox (`/workspace/`)** — the temporary Linux filesystem created per build and destroyed when the build finishes.
-3. **Inside Your Cloudflare R2 Bucket (`rift-artifacts`)** — the permanent cloud storage keys served to the browser `<iframe>`.
+3. **Inside Your Cloudflare R2 Bucket (`rift-storage`)** — the permanent cloud storage keys served to the browser `<iframe>`.
 
 ### Tree 1: Your Local Project Repository (`rift/`)
 ```text
@@ -131,10 +131,10 @@ When `DaytonaSandboxProvider.create()` boots a container, files inside that cont
 └─ screenshot_t1.png                  # Created by Playwright after input (downloaded -> uploaded to R2)
 ```
 
-### Tree 3: Inside Your Cloudflare R2 Bucket (`rift-artifacts`)
+### Tree 3: Inside Your Cloudflare R2 Bucket (`rift-storage`)
 Once your backend downloads `dist/` and the `.png` screenshots from Daytona using `sandbox.read_file()`, it uploads them to R2 under these keys:
 ```text
-rift-artifacts (Cloudflare R2 Bucket)
+rift-storage (Cloudflare R2 Bucket)
 └─ builds/
    └─ <build_id>/                     # e.g., builds/bld_01J9XYZ.../
       ├─ dist/
