@@ -1,17 +1,20 @@
-from daytona import Daytona
+from daytona import Daytona, DaytonaConfig
 from deepagents import create_deep_agent
 from langchain_daytona import DaytonaSandbox
-from langchain_openrouter import ChatOpenRouter
 
+from rift.config import get_settings
+from rift.core.llm import make_model
 from rift.core.prompts import CODER_AGENT_PROMPT
 
-sandbox = Daytona().create()
-backend = DaytonaSandbox(sandbox=sandbox)
 
-coder_agent = create_deep_agent(
-    model=ChatOpenRouter(model="nvidia/nemotron-3.5-super-vl:free"),
-    system_prompt=CODER_AGENT_PROMPT,
-    backend=backend,
-)
-
-# result = coder_agent.ainvoke({"messages": [{"role": "user", "content": ""}]})
+def build_coder_agent(sandbox_id: str):
+    s = get_settings()
+    api_key = s.daytona_api_key.get_secret_value() if s.daytona_api_key else None
+    client = Daytona(DaytonaConfig(api_key=api_key))
+    sandbox = client.get(sandbox_id)
+    return create_deep_agent(
+        model=make_model("coder"),
+        system_prompt=CODER_AGENT_PROMPT,
+        backend=DaytonaSandbox(sandbox=sandbox),
+        name="coder",
+    )
